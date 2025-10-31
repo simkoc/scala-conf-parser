@@ -1,0 +1,7 @@
+*~
+target
+.idea
+.bsp
+.project
+resources/vendor/*
+/resources/composer.lock
