@@ -1,17 +1,40 @@
+import xerial.sbt.Sonatype.sonatypeCentralHost
+
 name := "conf-parser"
+ThisBuild / organization := "de.halcony"
+ThisBuild / organizationName := "halcony"
+ThisBuild / homepage := Some(url("https://koch.science"))
+ThisBuild / scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/simkoc/scala-conf-parser"),
+    "scm:git@github.com:simkoc/scala-conf-parser.git"
+  )
+)
+ThisBuild / developers := List(
+  Developer(
+    "ossrh@halcony.de",
+    "Simon Koch",
+    "ossrh@halcony.de",
+    url("https://koch.science")
+  )
+)
+ThisBuild / licenses := List("MIT" -> url("https://opensource.org/license/mit"))
 ThisBuild / scalaVersion := "3.6.4"
-organization := "de.halcony"
-licenses += "MIT" -> url("https://opensource.org/license/mit")
+ThisBuild / versionScheme := Some("semver-spec")
+//ThisBuild / pomIncludeRepository := { _ => false }
+//ThisBuild / publishMavenStyle := true
+//ThisBuild / isSnapshot := false
+ThisBuild / sonatypeCredentialHost := sonatypeCentralHost
+publishTo := sonatypePublishToBundle.value
+sonatypeProfileName := "de.halcony"
 
 enablePlugins(JavaAppPackaging)
 
-val cpgVersion = "1.7.41"
-
 ThisBuild / libraryDependencies ++= Seq(
   "org.scalatest"              %% "scalatest"                  % "3.2.19"   % Test,
-  "de.halcony"                 %% "scala-argparse"             % "2.0.5",
+  "de.halcony"                 %% "scala-argparse"             % "2.0.6",
   "io.spray"                   %% "spray-json"                 % "1.3.6",
-  "org.wvlet.airframe"         %% "airframe-log"               % "2025.1.21",
+  "org.wvlet.airframe"         %% "airframe-log"               % "2026.1.0",
   "com.lihaoyi"                %% "fastparse"                  % "3.1.1"
 )
 
