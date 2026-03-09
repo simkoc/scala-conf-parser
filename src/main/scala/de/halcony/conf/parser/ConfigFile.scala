@@ -19,6 +19,9 @@ sealed case class NameExpr(value: String, override val index: Int, override val 
 sealed case class ScalarExpr(value: String, override val index: Int, override val lineNumber: Int)
     extends Expression
 
+sealed case class InlineExpr(value: String, override val index: Int, override val lineNumber: Int)
+    extends Expression
+
 sealed case class CommentExpr(value: String, override val index: Int, override val lineNumber: Int)
     extends Expression
 
