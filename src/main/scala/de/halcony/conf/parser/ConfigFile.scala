@@ -25,6 +25,16 @@ sealed case class InlineExpr(value: String, override val index: Int, override va
 sealed case class CommentExpr(value: String, override val index: Int, override val lineNumber: Int)
     extends Expression
 
+sealed case class VariableExpr(name: String, override val index: Int, override val lineNumber: Int)
+    extends Expression
+
+sealed case class ForeignBlobExpr(
+    name: String,
+    content: String,
+    override val index: Int,
+    override val lineNumber: Int
+) extends Expression
+
 sealed case class ListExpr(
     values: List[Expression],
     override val index: Int,
@@ -40,7 +50,7 @@ sealed case class CallExpr(
 
 sealed case class BlockExpr(
     name: Option[Expression],
-    argument: Option[Expression],
+    arguments: List[Expression],
     expressions: List[Expression],
     override val index: Int,
     override val lineNumber: Int
