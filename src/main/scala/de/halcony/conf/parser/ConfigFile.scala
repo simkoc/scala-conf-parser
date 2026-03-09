@@ -28,15 +28,16 @@ sealed case class ListExpr(
     override val lineNumber: Int
 ) extends Expression
 
-sealed case class AssignmentExpr(
+sealed case class CallExpr(
     name: Expression,
-    value: Expression,
+    args: List[Expression],
     override val index: Int,
     override val lineNumber: Int
 ) extends Expression
 
 sealed case class BlockExpr(
     name: Option[Expression],
+    argument: Option[Expression],
     expressions: List[Expression],
     override val index: Int,
     override val lineNumber: Int
