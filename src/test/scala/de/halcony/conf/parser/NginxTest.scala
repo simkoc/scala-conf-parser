@@ -3,7 +3,6 @@ package de.halcony.conf.parser
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 import fastparse.*
-import fastparse.Parsed.Failure.unapply
 
 import java.io.File
 import java.nio.file.Files
@@ -14,10 +13,10 @@ class NginxTest extends AnyWordSpec with Matchers {
   "parsing an nginx configuration file single lines" should {
     "work for single comment" in {
       val conf = "# nginx.vh.default.conf  --  docker-openresty"
-      Nginx.process(conf) match {
+      new Nginx(conf).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0,-1)
+            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0,1)
           )
         case Right(value) =>
           fail(value.toString())
@@ -25,10 +24,10 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "work for empty comment" in {
       val comment = "# "
-      Nginx.process(comment) match {
+      new Nginx(comment).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("",0,-1)
+            CommentExpr("",0,1)
           )
         case Right(value) =>
           fail(value.toString())
@@ -40,11 +39,11 @@ class NginxTest extends AnyWordSpec with Matchers {
           |# nginx.vh.default.conf  --  docker-openresty
           |#
           |""".stripMargin
-      Nginx.process(comments.trim) match {
+      new Nginx(comments.trim).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0,-1),
-            CommentExpr("",46,-1)
+            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0, 1),
+            CommentExpr("",46, 2)
           )
         case Right(value) =>
           fail(value.toString())
@@ -56,11 +55,11 @@ class NginxTest extends AnyWordSpec with Matchers {
           |# comment one
           |  # comment two
           |""".stripMargin
-      Nginx.process(conf) match {
+      new Nginx(conf).process() match {
         case Left(file) =>
           file.expressions shouldBe List(
-            CommentExpr("comment one", 1, -1),
-            CommentExpr("comment two", 17, -1)
+            CommentExpr("comment one", 1, 2),
+            CommentExpr("comment two", 17, 3)
           )
         case Right(_) =>
           fail("unable to parse file")
@@ -68,7 +67,7 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "process inline expression" in {
       val inlineExpr = "${NGINX_ERROR_LOG_LEVEL:-warn}"
-      parse(inlineExpr, Nginx.parseInlineExpression(using _)) match {
+      parse(inlineExpr, new Nginx("").parseInlineExpression(using _)) match {
         case Parsed.Success(value, index) =>
           value.value shouldBe "NGINX_ERROR_LOG_LEVEL:-warn"
           index shouldBe inlineExpr.length
@@ -78,7 +77,7 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "process scalar" in {
       val scalar = "www-data"
-      parse(scalar, Nginx.parseScalar(using _)) match {
+      parse(scalar, new Nginx("").parseScalar(using _)) match {
         case Parsed.Success(value, index) =>
           value.value shouldBe "www-data"
           index shouldBe scalar.length
@@ -88,7 +87,7 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "process scalar list" in {
       val scalarList = "www-data www-other"
-      parse(scalarList, Nginx.parseArgumentList(using _)) match {
+      parse(scalarList, new Nginx("").parseArgumentList(using _)) match {
         case Parsed.Success(value, index) =>
           value.length shouldBe 2
           index shouldBe scalarList.length
@@ -98,7 +97,7 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "process name" in {
       val name = "user"
-      parse(name, Nginx.parseName(using _)) match {
+      parse(name, new Nginx("").parseName(using _)) match {
         case Parsed.Success(value, index) =>
           value.value shouldBe "user"
           index shouldBe name.length
@@ -111,10 +110,10 @@ class NginxTest extends AnyWordSpec with Matchers {
         """
           |user www-data;
           |""".stripMargin
-      Nginx.process(conf) match {
+      new Nginx(conf).process() match {
         case Left(file) =>
           file.expressions shouldBe List(
-            CallExpr(NameExpr("user", 1, -1), List(ScalarExpr("www-data", 6, -1)), 1, -1),
+            CallExpr(NameExpr("user", 1, 2), List(ScalarExpr("www-data", 6, 2)), 1, 2),
           )
         case Right(_) =>
           fail("unable to parse file")
@@ -125,14 +124,14 @@ class NginxTest extends AnyWordSpec with Matchers {
         """
           |error_page  500 502  /50x.html;
           |""".stripMargin;
-      Nginx.process(conf) match {
+      new Nginx(conf).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("error_page", 1, -1),
-              List(ScalarExpr("500", 13, -1), ScalarExpr("502", 17, -1), ScalarExpr("/50x.html", 22, -1)),
+              NameExpr("error_page", 1, 2),
+              List(ScalarExpr("500", 13, 2), ScalarExpr("502", 17, 2), ScalarExpr("/50x.html", 22, 2)),
               1,
-              -1
+              2
             )
           )
         case Right(value) =>
@@ -142,17 +141,17 @@ class NginxTest extends AnyWordSpec with Matchers {
     "process inline expression assignment" in {
       val inlineExpr =
         """error_log /dev/stdout ${NGINX_ERROR_LOG_LEVEL:-warn};""".stripMargin
-      Nginx.process(inlineExpr.trim) match {
+      new Nginx(inlineExpr.trim).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("error_log",0,-1),
+              NameExpr("error_log",0, 1),
               List(
-                ScalarExpr("/dev/stdout",10,-1),
-                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",22,-1)
+                ScalarExpr("/dev/stdout",10,1),
+                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",22,1)
               ),
               0,
-              -1
+              1
             )
           )
         case Right(value) =>
@@ -165,17 +164,17 @@ class NginxTest extends AnyWordSpec with Matchers {
           |log_format main '$remote_addr - $remote_user [$time_local] "$request" '
           |                '$status $body_byte_sent "$http_referer" ';
           |""".stripMargin
-      Nginx.process(callWithStrings) match {
+      new Nginx(callWithStrings).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("log_format",1, -1),
+              NameExpr("log_format",1, 2),
               List(
-                ScalarExpr("main",12,-1),
-                ScalarExpr("$remote_addr - $remote_user [$time_local] \"$request\" ",17,-1),
-                ScalarExpr("$status $body_byte_sent \"$http_referer\" ",89,-1)
+                ScalarExpr("main",12,2),
+                ScalarExpr("$remote_addr - $remote_user [$time_local] \"$request\" ",17,2),
+                ScalarExpr("$status $body_byte_sent \"$http_referer\" ",89, 3)
               ),
-              1, -1
+              1, 2
             )
           )
         case Right(value) =>
@@ -192,18 +191,18 @@ class NginxTest extends AnyWordSpec with Matchers {
           |
           |# Establish some environment variables for later use
           |""".stripMargin
-      Nginx.process(lines) match {
+      new Nginx(lines).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("error_log",1,-1),
+              NameExpr("error_log",1, 2),
               List(
-                ScalarExpr("/dev/stdout",11,-1),
-                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",23,-1)
+                ScalarExpr("/dev/stdout",11, 2),
+                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",23, 2)
               ),
-              1,-1
+              1,2
             ),
-            CommentExpr("Establish some environment variables for later use",56,-1)
+            CommentExpr("Establish some environment variables for later use",56, 4)
             )
         case Right(value) =>
           fail(value.toString())
@@ -219,20 +218,20 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    listen 80;
           |}
           |""".stripMargin;
-      Nginx.process(nginxBlock) match {
+      new Nginx(nginxBlock).process() match {
         case Left(configFile) =>
           configFile.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("server",1, -1)),
+              Some(NameExpr("server",1, 2)),
               List(),
               List(
                 CallExpr(
-                  NameExpr("listen", 14, -1),
-                  List(ScalarExpr("80", 21, -1)),
-                  14, -1
+                  NameExpr("listen", 14, 3),
+                  List(ScalarExpr("80", 21, 3)),
+                  14, 3
                 )),
               1,
-              -1
+              1
             )
           )
         case Right(value) =>
@@ -246,20 +245,20 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    listen 80;
           |}
           |""".stripMargin;
-      Nginx.process(nginxBlock) match {
+      new Nginx(nginxBlock).process() match {
         case Left(configFile) =>
           configFile.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("location",1, -1)),
-              List(ScalarExpr("/",10,-1)),
+              Some(NameExpr("location",1, 2)),
+              List(ScalarExpr("/",10,2)),
               List(
                 CallExpr(
-                  NameExpr("listen", 18, -1),
-                  List(ScalarExpr("80", 25, -1)),
-                  18, -1
+                  NameExpr("listen", 18, 3),
+                  List(ScalarExpr("80", 25, 3)),
+                  18, 3
                 )),
               1,
-              -1
+              1
             )
           )
         case Right(value) =>
@@ -273,28 +272,28 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    error_log 42;
           |}
           |""".stripMargin
-      Nginx.process(block) match {
+      new Nginx(block).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("location",1,-1)),
+              Some(NameExpr("location",1,2)),
               List(
-                VariableExpr("first",10,-1),
-                VariableExpr("second",17,-1),
-                ScalarExpr("third",25,-1)
+                VariableExpr("first",10,2),
+                VariableExpr("second",17,2),
+                ScalarExpr("third",25,2)
               ),
               List(
                 CallExpr(
-                  NameExpr("error_log",37,-1),
+                  NameExpr("error_log",37,3),
                   List(
-                    ScalarExpr("42",47,-1)
+                    ScalarExpr("42",47,3)
                   ),
                   37,
-                  -1
+                  3
               )
             ),
               1,
-              -1
+              1
           ))
         case Right(value) =>
           fail(value.toString())
@@ -307,20 +306,20 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    listen 80;
           |}
           |""".stripMargin;
-      Nginx.process(nginxBlock) match {
+      new Nginx(nginxBlock).process() match {
         case Left(configFile) =>
           configFile.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("location", 1, -1)),
-              List(ScalarExpr("/50x.html", 12, -1)),
+              Some(NameExpr("location", 1, 2)),
+              List(ScalarExpr("/50x.html", 12, 2)),
               List(
                 CallExpr(
-                  NameExpr("listen", 28, -1),
-                  List(ScalarExpr("80", 35, -1)),
-                  28, -1
+                  NameExpr("listen", 28, 3),
+                  List(ScalarExpr("80", 35, 3)),
+                  28, 3
                 )),
               1,
-              -1
+              1
             )
           )
         case Right(value) =>
@@ -336,35 +335,35 @@ class NginxTest extends AnyWordSpec with Matchers {
           |
           |error_page 504  /50x.html;
           |""".stripMargin
-      Nginx.process(config) match {
+      new Nginx(config).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("location",1,-1)),
-              List(ScalarExpr("/",10,-1)),
+              Some(NameExpr("location",1,2)),
+              List(ScalarExpr("/",10,2)),
               List(
                 CallExpr(
-                  NameExpr("try_files",18,-1),
+                  NameExpr("try_files",18,3),
                   List(
-                    VariableExpr("uri",28,-1),
-                    VariableExpr("uri/",33,-1),
-                    ScalarExpr("/index.html",39,-1),
+                    VariableExpr("uri",28,3),
+                    VariableExpr("uri/",33,3),
+                    ScalarExpr("/index.html",39,3),
                   ),
                   18,
-                  -1
+                  3
                 )
               ),
               1,
-              -1
+              1
             ),
             CallExpr(
-              NameExpr("error_page",55,-1),
+              NameExpr("error_page",55,6),
               List(
-                ScalarExpr("504",66,-1),
-                ScalarExpr("/50x.html",71,-1)
+                ScalarExpr("504",66,6),
+                ScalarExpr("/50x.html",71,6)
               ),
               55,
-              -1
+              6
             )
           )
         case Right(value) => fail(value.toString())
@@ -379,21 +378,21 @@ class NginxTest extends AnyWordSpec with Matchers {
           |
           |# proxy the PHP scripts to Apache listening on 127.0.0.1:80
           |""".stripMargin
-      Nginx.process(block) match {
+      new Nginx(block).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("location",1,-1)),
-              List(ScalarExpr("/50x.html",12,-1)),
+              Some(NameExpr("location",1,2)),
+              List(ScalarExpr("/50x.html",12,2)),
               List(
-                CallExpr(NameExpr("root",32,-1),
-                  List(ScalarExpr("/usr/local/openresty/nginx/html",39,-1)),
-                  32,-1
+                CallExpr(NameExpr("root",32,3),
+                  List(ScalarExpr("/usr/local/openresty/nginx/html",39,3)),
+                  32,3
               )),
-              1,-1
+              1,1
             ),
             CommentExpr("proxy the PHP scripts to Apache listening on 127.0.0.1:80",
-              75,-1)
+              75,6)
           )
         case Right(value) =>
           fail(value.toString())
@@ -406,7 +405,7 @@ class NginxTest extends AnyWordSpec with Matchers {
       file.isFile && file.getPath.endsWith(".conf")
     })
     files.foreach(file => {
-      Nginx.process(Files.readString(file.toPath)) match {
+      new Nginx(Files.readString(file.toPath)).process() match {
         case Left(value) =>
         case Right(value) => fail(s"file ${file.getPath} was not successfully parsed: $value")
       }
