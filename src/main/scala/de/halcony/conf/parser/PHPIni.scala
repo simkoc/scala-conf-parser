@@ -50,6 +50,10 @@ class PHPIni(content: String) extends LogSupport {
     s"$firstPart${restParts.mkString}"
   }
 
+  private[parser] def parseValueWithSpaces[$: P]: P[String] = P(
+    CharsWhile(!Set('\n', ';').contains(_)).!
+  )
+
   private[parser] def parseFile[$: P]: P[ConfigFile] =
     P(Start ~ parsePHPDirective.rep ~ End).map(seq => ConfigFile(seq.toList, 0, getLineIndex(0)))
 
