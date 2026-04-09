@@ -43,6 +43,13 @@ class PHPIni(content: String) extends LogSupport {
     CharsWhile(!Set('\n', ' ', '\t', ';', '=', '[', ']', '"', '\'').contains(_)).!
   )
 
+  private[parser] def parseValueWithOperators[$: P]: P[String] = P(
+    (parseNonBreakCharacter ~ (anyWhitespace.rep ~ ("&" | "|" | "^" | "~" | "!" | "-") ~ anyWhitespace.rep ~ parseNonBreakCharacter).rep(1))
+  ).map { (firstPart, restParts) =>
+    // restParts is a Seq[Any] - we need to convert it to string
+    s"$firstPart${restParts.mkString}"
+  }
+
   private[parser] def parseFile[$: P]: P[ConfigFile] =
     P(Start ~ parsePHPDirective.rep ~ End).map(seq => ConfigFile(seq.toList, 0, getLineIndex(0)))
 
@@ -77,7 +84,7 @@ class PHPIni(content: String) extends LogSupport {
   )
 
   private[parser] def parsePHPValue[$: P]: P[Expression] = P(
-    Index ~ (parseQuotedString | parseNumber | parseExpression | parseNonBreakCharacter)
+    Index ~ (parseQuotedString | parseNumber | parseValueWithOperators | parseNonBreakCharacter)
   ).map { (startIndex, valueContent) =>
     // For quoted strings, preserve the quotes in the ScalarExpr
     // For other values (constants, etc.), use as-is
