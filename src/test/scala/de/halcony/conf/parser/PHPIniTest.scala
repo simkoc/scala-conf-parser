@@ -164,6 +164,46 @@ class PHPIniTest extends AnyWordSpec with Matchers {
           fail(value.toString())
       }
     }
+
+    "work for bitwise operators in values" in {
+      val bitwiseContent = "error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT"
+      new PHPIni(bitwiseContent).process() match {
+        case Left(value) =>
+          value.expressions shouldBe List(
+            CallExpr(
+              NameExpr("=",18,1),
+              List(
+                NameExpr("error_reporting",0,1),
+                ScalarExpr("E_ALL & ~E_DEPRECATED & ~E_STRICT",20,1)
+              ),
+              0,
+              1
+            )
+          )
+        case Right(value) =>
+          fail(value.toString())
+      }
+    }
+
+    "work for command-line style arguments" in {
+      val commandLineContent = "sendmail_path = /usr/sbin/sendmail -t -i"
+      new PHPIni(commandLineContent).process() match {
+        case Left(value) =>
+          value.expressions shouldBe List(
+            CallExpr(
+              NameExpr("=",16,1),
+              List(
+                NameExpr("sendmail_path",0,1),
+                ScalarExpr("/usr/sbin/sendmail -t -i",18,1)
+              ),
+              0,
+              1
+            )
+          )
+        case Right(value) =>
+          fail(value.toString())
+      }
+    }
   }
 
   "work with real php.ini file" in {
@@ -175,5 +215,20 @@ class PHPIniTest extends AnyWordSpec with Matchers {
       case Right(value) =>
         fail(s"file ${file.getPath} was not successfully parsed: $value")
     }
+  }
+
+  "work with real world php.ini files" in {
+    val files = new File("src/test/resources/php/").listFiles(file => {
+      file.isFile && file.getPath.endsWith(".ini")
+    })
+    files.foreach(file => {
+      new PHPIni(Files.readString(file.toPath)).process() match {
+        case Left(value) =>
+          // Just check that it parses successfully
+          value should not be null
+        case Right(value) =>
+          fail(s"file ${file.getPath} was not successfully parsed: $value")
+      }
+    })
   }
 }
