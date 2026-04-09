@@ -171,10 +171,10 @@ class PHPIniTest extends AnyWordSpec with Matchers {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("=",18,1),
+              NameExpr("=",16,1),
               List(
                 NameExpr("error_reporting",0,1),
-                ScalarExpr("E_ALL & ~E_DEPRECATED & ~E_STRICT",20,1)
+                ScalarExpr("E_ALL & ~E_DEPRECATED & ~E_STRICT",18,1)
               ),
               0,
               1
@@ -191,10 +191,10 @@ class PHPIniTest extends AnyWordSpec with Matchers {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("=",16,1),
+              NameExpr("=",14,1),
               List(
                 NameExpr("sendmail_path",0,1),
-                ScalarExpr("/usr/sbin/sendmail -t -i",18,1)
+                ScalarExpr("/usr/sbin/sendmail -t -i",16,1)
               ),
               0,
               1

@@ -88,7 +88,7 @@ class PHPIni(content: String) extends LogSupport {
   )
 
   private[parser] def parsePHPValue[$: P]: P[Expression] = P(
-    Index ~ (parseQuotedString | parseNumber | parseValueWithOperators | parseNonBreakCharacter)
+    Index ~ (parseQuotedString | parseNumber | parseValueWithSpaces | parseValueWithOperators | parseNonBreakCharacter)
   ).map { (startIndex, valueContent) =>
     // For quoted strings, preserve the quotes in the ScalarExpr
     // For other values (constants, etc.), use as-is
