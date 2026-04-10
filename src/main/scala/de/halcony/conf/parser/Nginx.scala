@@ -31,7 +31,7 @@ class Nginx(content: String) extends LogSupport {
   def process(): Either[ConfigFile, fastparse.Parsed.Failure] = {
     parse(this.content, parseFile(using _)) match {
       case Parsed.Success(value, index) => Left(value)
-      case failure: Parsed.Failure =>
+      case failure: Parsed.Failure      =>
         logger.error(failure)
         Right(failure)
     }
@@ -48,7 +48,7 @@ class Nginx(content: String) extends LogSupport {
 
   private[parser] def parseExpr[$: P]: P[Expression] = P(
     anyWhitespace.rep ~ (parseComment | parseBlockWithArguments | parseCall | parseLuaBLock | parseSetByLuaBlock)
-  )//.log
+  ) // .log
 
   private[parser] def parseSingleQuoteStringString[$: P]: P[String] =
     P(Index ~ "'" ~ CharsWhile(_ != '\'').! ~ "'").map((startIndex, stringContent) => stringContent)
@@ -60,7 +60,7 @@ class Nginx(content: String) extends LogSupport {
 
   private[parser] def parseString[$: P]: P[String] =
     P(parseSingleQuoteStringString | parseDoubleQuoteString)
-      .map(stringContent => stringContent)//.log
+      .map(stringContent => stringContent) // .log
 
   private[parser] def parseComment[$: P]: P[CommentExpr] =
     P(Index ~ "#" ~~/ (CharsWhile(_ != '\n') | "").! ~~/ ("\n" | End))
@@ -73,23 +73,23 @@ class Nginx(content: String) extends LogSupport {
 
   private[parser] def parseScalar[$: P]: P[ScalarExpr] =
     P(Index ~ (parseString | parseNonBreakCharacters))
-      .map((startIndex, value) => ScalarExpr(value, startIndex, getLineIndex(startIndex)))//.log
+      .map((startIndex, value) => ScalarExpr(value, startIndex, getLineIndex(startIndex))) // .log
 
   private[parser] def parseInlineExpression[$: P]: P[InlineExpr] =
     P(Index ~ "${" ~ parseNonBreakCharacters ~ "}")
       .map((startIndex, content) =>
         InlineExpr(content, startIndex, getLineIndex(startIndex))
-      )//.log
+      ) // .log
 
   private[parser] def parseVariable[$: P]: P[VariableExpr] =
     P(Index ~ "$" ~ !"{" ~ parseNonBreakCharacters.!)
       .map((startIndex, variableName) =>
         VariableExpr(variableName, startIndex, getLineIndex(startIndex))
-      )//.log
+      ) // .log
 
   private[parser] def parseArgumentList[$: P]: P[List[Expression]] = P(
     Index ~ ((parseScalar | parseInlineExpression | parseVariable) ~ " ".?).rep
-  ).map((_, values) => values.toList)//.log
+  ).map((_, values) => values.toList) // .log
 
   private[parser] def parseCall[$: P]: P[CallExpr] =
     P(Index ~ (parseName | parseVariable) ~ !"{" ~ parseArgumentList ~ ";")
@@ -100,8 +100,7 @@ class Nginx(content: String) extends LogSupport {
           startIndex,
           getLineIndex(startIndex)
         )
-      )//.log
-
+      ) // .log
 
   private[parser] def luaBlockName[$: P]: P[String] = P(
     ("rewrite_by_lua_block" |
@@ -113,53 +112,48 @@ class Nginx(content: String) extends LogSupport {
       "access_by_lua_block" |
       "header_filter_by_lua_block" |
       "body_filter_by_lua_block").!
-  ).map(
-    blockName => blockName
-  )
+  ).map(blockName => blockName)
 
-  private [parser] def parseSetByLuaBlock[$ : P] : P[ForeignBlobExpr] = P(
+  private[parser] def parseSetByLuaBlock[$: P]: P[ForeignBlobExpr] = P(
     Index ~ "set_by_lua_block" ~ parseVariable ~ "{" ~ readBlobContainingMatchingBrackets ~ "}"
-  ).map(
-    (index, variable, blob) =>
-      ForeignBlobExpr(
-        s"set_by_lua_block ${variable.name}",
-        blob,
-        index,
-        getLineIndex(index)
-      )
+  ).map((index, variable, blob) =>
+    ForeignBlobExpr(
+      s"set_by_lua_block ${variable.name}",
+      blob,
+      index,
+      getLineIndex(index)
+    )
   )
 
   private[parser] def readNoBrackets[$: P]: P[String] =
-    P(Index ~~ CharsWhile(!Set('{', '}').contains(_)).!).map(
-      (index, content) => {
-        //println(content)
-        content
-      }
-    )//.log
+    P(Index ~~ CharsWhile(!Set('{', '}').contains(_)).!).map((index, content) => {
+      // println(content)
+      content
+    }) // .log
 
   private[parser] def ensureMatchingBrackets[$: P]: P[String] =
-    //todo: I do not know how to prevent it but we are swallowing a \n here, but given that this is a blob it does not matter anyways
+    // todo: I do not know how to prevent it but we are swallowing a \n here, but given that this is a blob it does not matter anyways
     P(Index ~ "{".! ~~/ readBlobContainingMatchingBrackets ~/ "}".!).map {
       case (index, open, content, close) =>
         s"$open$content$close"
-    }//.log
+    } // .log
 
-  private[parser] def readBlobContainingMatchingBrackets[$ : P] : P[String] =
-    P(Index ~ ( !"{" ~~ readNoBrackets | ensureMatchingBrackets).rep).map(
-      (index, content) => content.mkString("")
-    )//.log
+  private[parser] def readBlobContainingMatchingBrackets[$: P]: P[String] =
+    P(Index ~ (!"{" ~~ readNoBrackets | ensureMatchingBrackets).rep).map((index, content) =>
+      content.mkString("")
+    ) // .log
 
   private[parser] def parseLuaBLock[$: P]: P[ForeignBlobExpr] =
     P(Index ~ luaBlockName ~ "{" ~ readBlobContainingMatchingBrackets ~ "}")
       .map((index, luaBlockName, content) =>
         ForeignBlobExpr(luaBlockName, content, index, getLineIndex(index))
-      )//.log
+      ) // .log
 
   private[parser] def parseBlock[$: P]: P[BlockExpr] =
     P(Index ~ !luaBlockName ~ parseName ~ !"${" ~ "{" ~/ parseExpr.rep ~ "}")
       .map((indexStart, nameExpr, exprs) =>
         BlockExpr(Some(nameExpr), List(), exprs.toList, indexStart, getLineIndex(indexStart))
-      )//.log
+      ) // .log
 
   private[parser] def parseBlockWithArguments[$: P]: P[BlockExpr] =
     P(
@@ -167,5 +161,5 @@ class Nginx(content: String) extends LogSupport {
     )
       .map((indexStart, blockNameExpr, argumentList, exprs) =>
         BlockExpr(Some(blockNameExpr), argumentList, exprs.toList, indexStart, indexStart)
-      )//.log
+      ) // .log
 }

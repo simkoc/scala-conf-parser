@@ -44,7 +44,8 @@ class PHPIni(content: String) extends LogSupport {
   )
 
   private[parser] def parseValueWithOperators[$: P]: P[String] = P(
-    (parseNonBreakCharacter ~ (anyWhitespace.rep ~ ("&" | "|" | "^" | "~" | "!" | "-") ~ anyWhitespace.rep ~ parseNonBreakCharacter).rep(1))
+    (parseNonBreakCharacter ~ (anyWhitespace.rep ~ ("&" | "|" | "^" | "~" | "!" | "-") ~ anyWhitespace.rep ~ parseNonBreakCharacter)
+      .rep(1))
   ).map { (firstPart, restParts) =>
     // restParts is a Seq[Any] - we need to convert it to string
     s"$firstPart${restParts.mkString}"
@@ -63,15 +64,11 @@ class PHPIni(content: String) extends LogSupport {
 
   private[parser] def parseComment[$: P]: P[CommentExpr] =
     P(anyWhitespace.rep ~ Index ~ ";" ~~/ (CharsWhile(_ != '\n') | "").! ~~/ ("\n" | End))
-      .map((startIndex, comment) =>
-        CommentExpr(comment.trim, startIndex, getLineIndex(startIndex))
-      )
+      .map((startIndex, comment) => CommentExpr(comment.trim, startIndex, getLineIndex(startIndex)))
 
   private[parser] def parseSection[$: P]: P[CommentExpr] = P(
     anyWhitespace.rep ~ Index ~ "[" ~ CharsWhile(_ != ']').! ~ "]" ~ anyWhitespace.rep
-  ).map((startIndex, sectionName) =>
-    CommentExpr(sectionName, startIndex, getLineIndex(startIndex))
-  )
+  ).map((startIndex, sectionName) => CommentExpr(sectionName, startIndex, getLineIndex(startIndex)))
 
   private[parser] def parseDirective[$: P]: P[CallExpr] = P(
     anyWhitespace.rep ~ Index ~ parseNonBreakCharacter ~ anyWhitespace.rep ~ Index ~ "=" ~ anyWhitespace.rep ~ parsePHPValue.? ~ anyWhitespace.rep
@@ -97,14 +94,16 @@ class PHPIni(content: String) extends LogSupport {
 
   private[parser] def parseQuotedString[$: P]: P[String] = P(
     ("\"" ~ CharsWhile(_ != '"').! ~ "\"").map { content => s"\"$content\"" } |
-    ("'" ~ CharsWhile(_ != '\'').! ~ "'").map { content => s"'$content'" }
+      ("'" ~ CharsWhile(_ != '\'').! ~ "'").map { content => s"'$content'" }
   )
 
   // Removed parseBooleanValue since we want to allow any unquoted constants
   // via parseNonBreakCharacter
 
   private[parser] def parseNumber[$: P]: P[String] = P(
-    ("-".? ~ CharsWhile(_.isDigit) ~ ("." ~ CharsWhile(_.isDigit)).? ~ CharsWhile(c => c.isLetter && c.isUpper)).!
+    ("-".? ~ CharsWhile(_.isDigit) ~ ("." ~ CharsWhile(_.isDigit)).? ~ CharsWhile(c =>
+      c.isLetter && c.isUpper
+    )).!
   )
 
   private[parser] def parseExpression[$: P]: P[String] = P(
