@@ -3,6 +3,7 @@ package de.halcony.conf.parser
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 import fastparse.*
+import fastparse.Parsed.{Failure, Success}
 
 import java.io.File
 import java.nio.file.Files
@@ -105,6 +106,16 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(failure.toString())
       }
     }
+      "process ~ as name" in {
+        val name = "~"
+        parse(name, new Nginx("").parseName(using _)) match {
+          case Parsed.Success(value, index) =>
+            value.value shouldBe "~"
+            index shouldBe name.length
+          case failure: Parsed.Failure =>
+            fail(failure.toString())
+        }
+      }
     "process for single assignment as call" in {
       val conf: String =
         """
@@ -211,6 +222,29 @@ class NginxTest extends AnyWordSpec with Matchers {
   }
 
   "parsing an nginx block" should {
+    "work for a geoip2 block" in {
+      val block =
+        """
+          |geoip2 /etc/nginx/GeoLite2-Country.mmdb {
+          |        auto_reload 1h;
+          |
+          |        $geoip2_metadata_country_build metadata build_epoch;
+          |
+          |        # populate the country
+          |        $geoip2_data_country_code source=$remote_addr country iso_code;
+          |        $geoip2_data_country_name source=$remote_addr country names en;
+          |
+          |        # populate the continent
+          |        $geoip2_data_continent_code source=$remote_addr continent code;
+          |        $geoip2_data_continent_name source=$remote_addr continent names en;
+          |    }
+          |""".stripMargin
+      parse(block, new Nginx("").parseFile(using _)) match {
+          case Success(value, index) =>
+            index shouldBe block.length
+          case Failure(value) => fail(value.toString)
+        }
+    }
     "work for a unnamed block" in {
       val nginxBlock : String =
         """
@@ -398,18 +432,216 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(value.toString())
       }
     }
+    "work for location with regexp" in {
+      val block =
+        """
+          |location ~ ^/(index|get|static|errors/report|errors/404|errors/503|health_check)\.php$ {
+          |        try_files 404;
+          |}
+          |""".stripMargin
+      new Nginx(block).process() match {
+        case Left(value) =>
+          value.expressions shouldBe List(
+            BlockExpr(
+              Some(NameExpr("location",1,2)),
+              List(
+                ScalarExpr("~",10,2),
+                ScalarExpr("^/(index|get|static|errors/report|errors/404|errors/503|health_check)\\.php$",12,2)
+              ),
+              List(
+                CallExpr(
+                  NameExpr("try_files",98,3),
+                  List(ScalarExpr("404",108,3)),
+                  98,3)
+              ),
+              1,1
+            )
+          )
+        case Right(value) =>
+          fail(value.toString())
+      }
+    }
+  }
+
+  "parsing lua block" should {
+    "work for header_filtered_by_lua_block" in {
+      val luaBlock =
+        """
+          |header_filter_by_lua_block {
+          |  ngx.log(ngx.ERR, "header_filter_by_lua_block*")
+          |
+          |  local lua_resty_waf = require "resty.waf"
+          |
+          |  -- note that options set in previous handlers (in the same scope)
+          |  -- do not need to be set again
+          |  local waf = lua_resty_waf:new()
+          |
+          |  waf:exec()
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseLuaBLock(using _)) match {
+          case Success(value, index) =>
+            index shouldBe luaBlock.length
+          case f : Failure => fail(f.msg)
+        }
+    }
+    "able to process lua block name" in {
+      Set(
+        "init_by_lua_block",
+        "header_filter_by_lua_block"
+      ).map {
+        blockName =>
+          parse(blockName, new Nginx("").luaBlockName(using _)) match {
+            case Success(value,index) =>
+              index shouldBe blockName.length
+              value shouldBe blockName
+            case f : Parsed.Failure => fail(f.msg)
+          }
+      }
+    }
+    "work for content_by_lua_block" in {
+      val luaBlock =
+        """
+          |content_by_lua_block {
+          |     local http = require "resty.http"
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseLuaBLock(using _)) match {
+        case Success(value, index) =>
+          index shouldBe luaBlock.length
+        case Failure(value) => fail(value.toString)
+      }
+    }
+    "work for content_by_lua_block with internal { ... }" in {
+      val luaBlock =
+        """
+          |content_by_lua_block {
+          |     stuff = {
+          |         local http = require "resty.http"
+          |     }
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseLuaBLock(using _)) match {
+        case Success(value, index) =>
+          index shouldBe luaBlock.length
+        case Failure(value) => fail(value.toString)
+      }
+    }
+    "be able to process block" in {
+      val nested =
+        """{
+          |   a = 42;
+          |}""".stripMargin
+      parse(nested, new Nginx("").readBlobContainingMatchingBrackets(using _)) match {
+        case Success(value, index) =>
+          index shouldBe nested.length
+        case Failure(value) =>
+          fail(s"failed due to ${value.toString}")
+      }
+    }
+    "be able to process block with nested brackets" in {
+      val nested =
+        """{
+          |   a = 42;
+          |   {
+          |       b = 23;
+          |   }
+          |}""".trim.stripMargin
+      parse(nested, new Nginx("").readBlobContainingMatchingBrackets(using _)) match {
+        case Success(value, index) =>
+          index shouldBe nested.length
+        case Failure(value) =>
+          fail(s"failed due to ${value.toString}")
+      }
+    }
+    "be able to processed nested brackets mixed content" in {
+      val nested =
+        """local opts = {
+          |           authorization_params = { organization_domain="jobteaser" },
+          |}""".stripMargin
+      parse(nested, new Nginx("").readBlobContainingMatchingBrackets(using _)) match {
+        case Success(value, index) =>
+          index shouldBe nested.length
+        case Failure(value) =>
+          fail(s"failed due to ${value.toString}")
+      }
+    }
+    "work for set_by_lua_block" in {
+      val luaBlock =
+        """set_by_lua_block $a {
+          |        ngx.log(ngx.ERR, "set_by_lua*")
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseSetByLuaBlock(using _)) match {
+          case Success(value, index) =>
+            index shouldBe luaBlock.length
+          case f : Failure =>
+            fail(f.msg)
+        }
+    }
+    "work for set_by_lua_block in location /" in {
+      val luaBlock =
+        """location / {
+          |    set_by_lua_block $a {
+          |        ngx.log(ngx.ERR, "set_by_lua*")
+          |    }
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseFile(using _)) match {
+        case Success(value, index) =>
+          index shouldBe luaBlock.length
+        case f: Failure =>
+          fail(f.msg)
+      }
+    }
+    "work for content from regression test" in {
+      val luaBlock =
+        """
+          |content_by_lua_block {
+          |                local res, err = httpc:request_uri(url, {
+          |                    method = method,
+          |                    body = body,
+          |                    ssl_verify = false,
+          |                    headers = {
+          |
+          |                    }
+          |                })
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseLuaBLock(using _)) match {
+        case Success(value, index) =>
+          index shouldBe luaBlock.length
+        case Failure(value) =>
+          fail(s"failed due to ${value.toString}")
+      }
+    }
+    "work for content from regression test II" in {
+      val luaBlock =
+        """access_by_lua_block {
+          |        local opts = {
+          |           authorization_params = { organization_domain="jobteaser" },
+          |        }
+          |}""".stripMargin
+      parse(luaBlock, new Nginx("").parseLuaBLock(using _)) match {
+        case Success(value, index) =>
+          index shouldBe luaBlock.length
+        case Failure(value) =>
+          fail(s"failed due to ${value.toString}")
+      }
+    }
   }
 
   "work with known problem files" in {
     val files = new File("src/test/resources/nginx/").listFiles(file => {
       file.isFile && file.getPath.endsWith(".conf")
     })
-    files.foreach(file => {
-      new Nginx(Files.readString(file.toPath)).process() match {
-        case Left(value) =>
-        case Right(value) => fail(s"file ${file.getPath} was not successfully parsed: $value")
-      }
-    })
+    val result = files.map(file => {
+      (file, new Nginx(Files.readString(file.toPath)).process())
+    }).map {
+      case (file, Right(value)) => (file, Some(value))
+      case (file, Left(_)) => (file,None)
+    }.filter {
+      (lhs, rhs) => rhs.nonEmpty
+    }.map{
+      (lhs,rhs) => s"$lhs -> ${rhs.get.toString()}"
+    }
+    if(!result.isEmpty) {
+      fail(result.mkString("\n"))
+    }
   }
 
 
