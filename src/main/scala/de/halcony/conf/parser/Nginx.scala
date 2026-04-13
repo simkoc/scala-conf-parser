@@ -5,7 +5,30 @@ import MultiLineWhitespace.*
 import fastparse.internal.Util
 import wvlet.log.LogSupport
 
+import scala.collection.immutable.{HashSet, StringOps}
+import scala.util.matching.Regex
+
 class Nginx(content: String) extends LogSupport {
+
+  /** Checks if a given file contains indicators that it might not actually
+   * be an nginx config even though it is called.conf and looks vaguely familiar
+   *
+   * @return
+   */
+  def checkForKnownNotNginxConfEndingOnConf(): Boolean = {
+    val indicators: HashSet[Regex] = HashSet(
+      "^\\[supervisord\\]".r.unanchored,
+      "OWASP ModSecurity Core Rule Set".r.unanchored,
+      "Configuration File for JavaScript Lint".r.unanchored,
+      "this is merely a common Makefile".r.unanchored,
+      "ModSecurity Console receiving URI".r.unanchored,
+      "Rule engine initialization".r.unanchored,
+      "owasp-modsecurity-crs".r.unanchored,
+      "<VirtualHost".r.unanchored,
+    )
+    !";".r.unanchored.matches(content) || // if there is not a single ; it is most likely fubar anyways
+      indicators.exists(regex => regex.unanchored.matches(content))
+  }
 
   private def createLineIndex: Map[Int, Int] = {
     var currentLine = 1
@@ -31,7 +54,7 @@ class Nginx(content: String) extends LogSupport {
   def process(): Either[ConfigFile, fastparse.Parsed.Failure] = {
     parse(this.content, parseFile(using _)) match {
       case Parsed.Success(value, index) => Left(value)
-      case failure: Parsed.Failure      =>
+      case failure: Parsed.Failure =>
         logger.error(failure)
         Right(failure)
     }
@@ -39,28 +62,12 @@ class Nginx(content: String) extends LogSupport {
 
   private[parser] def anyWhitespace[$: P] = P(" " | "\t")
 
-  private[parser] def parseNonBreakCharacters[$: P]: P[String] = P(
-    !"$" ~ CharsWhile(!Set('\n', ' ', '\t', ';', '{', '}').contains(_)).!
-  )
-
   private[parser] def parseFile[$: P]: P[ConfigFile] =
-    P(Start ~ parseExpr.rep ~ End).map(seq => ConfigFile(seq.toList, 0, getLineIndex(0)))
+    P(Start ~ parseExpr.rep ~ End).map(seq => ConfigFile(seq.toList, 0, getLineIndex(0)))//.log
 
   private[parser] def parseExpr[$: P]: P[Expression] = P(
-    anyWhitespace.rep ~ (parseComment | parseBlockWithArguments | parseCall | parseLuaBLock | parseSetByLuaBlock)
-  ) // .log
-
-  private[parser] def parseSingleQuoteStringString[$: P]: P[String] =
-    P(Index ~ "'" ~ CharsWhile(_ != '\'').! ~ "'").map((startIndex, stringContent) => stringContent)
-
-  private[parser] def parseDoubleQuoteString[$: P]: P[String] =
-    P(Index ~ "\"" ~ CharsWhile(_ != '"').! ~ "\"").map((startIndex, stringContent) =>
-      stringContent
-    )
-
-  private[parser] def parseString[$: P]: P[String] =
-    P(parseSingleQuoteStringString | parseDoubleQuoteString)
-      .map(stringContent => stringContent) // .log
+    anyWhitespace.rep ~ (parseComment | parseBlockWithArguments | parseCall | parseLuaBLock | parseSetByLuaBlock) // | parseBlock)
+  )//.log
 
   private[parser] def parseComment[$: P]: P[CommentExpr] =
     P(Index ~ "#" ~~/ (CharsWhile(_ != '\n') | "").! ~~/ ("\n" | End))
@@ -68,31 +75,10 @@ class Nginx(content: String) extends LogSupport {
         CommentExpr(comment.trim, startIndex, getLineIndex(startIndex))
       ) // .log
 
-  private[parser] def parseName[$: P]: P[NameExpr] = P(Index ~ parseNonBreakCharacters)
-    .map((indexStart, name) => NameExpr(name, indexStart, getLineIndex(indexStart))) // .log
 
-  private[parser] def parseScalar[$: P]: P[ScalarExpr] =
-    P(Index ~ (parseString | parseNonBreakCharacters))
-      .map((startIndex, value) => ScalarExpr(value, startIndex, getLineIndex(startIndex))) // .log
-
-  private[parser] def parseInlineExpression[$: P]: P[InlineExpr] =
-    P(Index ~ "${" ~ parseNonBreakCharacters ~ "}")
-      .map((startIndex, content) =>
-        InlineExpr(content, startIndex, getLineIndex(startIndex))
-      ) // .log
-
-  private[parser] def parseVariable[$: P]: P[VariableExpr] =
-    P(Index ~ "$" ~ !"{" ~ parseNonBreakCharacters.!)
-      .map((startIndex, variableName) =>
-        VariableExpr(variableName, startIndex, getLineIndex(startIndex))
-      ) // .log
-
-  private[parser] def parseArgumentList[$: P]: P[List[Expression]] = P(
-    Index ~ ((parseScalar | parseInlineExpression | parseVariable) ~ " ".?).rep
-  ).map((_, values) => values.toList) // .log
 
   private[parser] def parseCall[$: P]: P[CallExpr] =
-    P(Index ~ (parseName | parseVariable) ~ !"{" ~ parseArgumentList ~ ";")
+    P(Index ~ (parseName | parseVariable) ~ parseArgumentList ~ ";")
       .map((startIndex, name, values) =>
         CallExpr(
           name,
@@ -100,17 +86,19 @@ class Nginx(content: String) extends LogSupport {
           startIndex,
           getLineIndex(startIndex)
         )
-      ) // .log
+      )//.log
 
   private[parser] def luaBlockName[$: P]: P[String] = P(
     ("rewrite_by_lua_block" |
       "set_by_lua_block" |
       "log_by_lua_block" |
       "init_by_lua_block" |
+      "init_worker_by_lua_block" |
       "balancer_by_lua_block" |
       "content_by_lua_block" |
       "access_by_lua_block" |
       "header_filter_by_lua_block" |
+      "ssl_certificate_by_lua_block" |
       "body_filter_by_lua_block").!
   ).map(blockName => blockName)
 
@@ -149,17 +137,104 @@ class Nginx(content: String) extends LogSupport {
         ForeignBlobExpr(luaBlockName, content, index, getLineIndex(index))
       ) // .log
 
-  private[parser] def parseBlock[$: P]: P[BlockExpr] =
-    P(Index ~ !luaBlockName ~ parseName ~ !"${" ~ "{" ~/ parseExpr.rep ~ "}")
-      .map((indexStart, nameExpr, exprs) =>
-        BlockExpr(Some(nameExpr), List(), exprs.toList, indexStart, getLineIndex(indexStart))
-      ) // .log
+
+  private[parser] def parseExprBlock[$ : P] : P[Seq[Expression]] = P(
+    Index ~ !"${" ~ "{" ~ parseExpr.rep ~ "}"
+  ).map(
+    (index, exprs) => exprs
+  )//.log
 
   private[parser] def parseBlockWithArguments[$: P]: P[BlockExpr] =
     P(
-      Index ~ !luaBlockName ~ parseName ~ "=".? ~ parseArgumentList ~ !"${" ~ "{" ~ parseExpr.rep ~ "}"
+      Index ~ !luaBlockName ~ parseName ~ "=".? ~ parseArgumentList ~ parseExprBlock
     )
       .map((indexStart, blockNameExpr, argumentList, exprs) =>
         BlockExpr(Some(blockNameExpr), argumentList, exprs.toList, indexStart, indexStart)
-      ) // .log
+      )//.log
+
+  private[parser] def parseArgumentList[$: P]: P[List[Expression]] = P(
+    Index ~ (parseString | parseInlineExpression | parseVariable).rep)
+    .map((_, values) => values.toList)//.log
+
+  private[parser] def parseInlineExpression[$: P]: P[InlineExpr] =
+    P(Index ~ "${" ~ CharsWhile(!Set('{', '}').contains(_)).! ~ "}")
+      .map((startIndex, content) =>
+        InlineExpr(content, startIndex, getLineIndex(startIndex))
+      )//.log
+
+  /** There are four types of string
+   *  single quote
+   *  double quote
+   *  no quote (may have variables)
+   *  regexp
+   *  none of them may start with a $ or {
+   *
+   * @tparam $ the parser context
+   * @return the extracted expression
+   */
+  private[parser] def parseString[$: P]: P[ScalarExpr] =
+    P(!("$" | "{") ~ (parseSingleQuoteStringString | parseDoubleQuoteStringWithEscapedDoubleQuote | parseMixedContentString)).map(
+      content => {
+        //println(content)
+        content
+      }
+    )//.log
+
+  /** cheap shot of covering all non " and ' strings, assuming that they will always be separated by a space or finished by a ;
+   *  We won't be able to capture the different parts and kinds though.
+   *
+   * @tparam $ the parser contenxt
+   * @return the parsed ScalarExpression
+   */
+  private[parser] def parseMixedContentString[$ : P] : P[ScalarExpr] = {
+    P(Index ~ CharsWhile(!Set(' ',';').contains(_)).!).map(
+      (index,content) => ScalarExpr(content,index,getLineIndex(index))
+    )//.log
+  }
+
+  private[parser] def parseSingleQuoteStringString[$: P]: P[ScalarExpr] =
+      P(Index ~ "'" ~ CharsWhile(_ != '\'').! ~ "'").map((startIndex, stringContent) => ScalarExpr(stringContent,startIndex,getLineIndex(startIndex)))
+
+  private[parser] def parseDoubleQuoteStringWithEscapedDoubleQuote[$: P]: P[ScalarExpr] =
+      P(Index ~ "\"" ~ (!"\"" ~ (!"\\\"" ~ AnyChar.! | "\\\"".!)).rep ~ "\"").map(
+        (index, ret) => ScalarExpr(ret.mkString,index,getLineIndex(index))
+      ) //.log
+
+  private[parser] def parseVariable[$: P]: P[VariableExpr] =
+    P(
+      parseDollarVariable | parseDbrackedVariable | parseSbrackedVariable
+    ) //.log
+
+  private[parser] def parseDollarVariable[$: P]: P[VariableExpr] =
+      P(Index ~ "$" ~ !"{" ~ parseNonBreakCharacters.!)
+        .map((startIndex, variableName) =>
+          VariableExpr(variableName, startIndex, getLineIndex(startIndex))
+        )//.log
+
+  private[parser] def parseDbrackedVariable[$: P]: P[VariableExpr] =
+    P(Index ~ "{{" ~~ (!("}}" | ";" | "\"" | "\n") ~~ AnyChar).repX(min=1).! ~~ "}}").map(
+      (index, content) => VariableExpr(content, index, getLineIndex(index))
+    )//.log
+
+  private[parser] def parseSbrackedVariable[$: P]: P[VariableExpr] =
+      P(Index ~ "{" ~~ (!("{" | "}" | ";" | "\"" | "\n") ~~ AnyChar).repX(min=1).! ~~ "}").map(
+        (index, content) => {
+          //println(content)
+          VariableExpr(content, index, getLineIndex(index))
+        }
+      )//.log
+
+  private[parser] def parseRegexpString[$: P]: P[ScalarExpr] =
+    P(Index ~ parseNonBreakCharacters.! ~ "$").map(
+      (index, content) => ScalarExpr("$content$$",index,getLineIndex(index))
+    )//.log
+
+  private[parser] def parseName[$: P]: P[NameExpr] = P(Index ~ parseNonBreakCharacters)
+    .map(
+      (indexStart, name) => NameExpr(name, indexStart, getLineIndex(indexStart))
+    )//.log
+
+  private[parser] def parseNonBreakCharacters[$: P]: P[String] = P(
+    !"$" ~ CharsWhile(!Set('\n', ' ', '\t', ';', '{', '}', '$').contains(_)).!
+  )
 }

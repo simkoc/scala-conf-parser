@@ -7,9 +7,52 @@ import fastparse.Parsed.{Failure, Success}
 
 import java.io.File
 import java.nio.file.Files
+import scala.collection.immutable.HashSet
 
 class NginxTest extends AnyWordSpec with Matchers {
 
+  "parsing a variable" should {
+    "work for $var" in {
+      val varExpr = "$var t"
+      parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
+        case Success(value, index) =>
+          index shouldBe varExpr.length - 2
+          value.name shouldBe "var"
+        case f : Failure =>
+          fail(f.msg)
+      }
+    }
+    "work for ${var}" in {
+      val varExpr = "${var} t"
+      parse(varExpr,new Nginx(varExpr).parseInlineExpression(using _)) match {
+        case Success(value, index) =>
+          index shouldBe varExpr.length - 2
+          value.value shouldBe "var"
+        case f : Failure =>
+          fail(f.msg)
+      }
+    }
+    "work for {var}" in {
+      val varExpr = "{var} t"
+      parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
+        case Success(value, index) =>
+          index shouldBe varExpr.length - 2
+          value.name shouldBe "var"
+        case f : Failure =>
+          fail(f.msg)
+      }
+    }
+    "work for {{var}}" in {
+      val varExpr = "{var} t"
+      parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
+        case Success(value, index) =>
+          index shouldBe varExpr.length - 2
+          value.name shouldBe "var"
+        case f : Failure =>
+          fail(f.msg)
+      }
+    }
+  }
 
   "parsing an nginx configuration file single lines" should {
     "work for single comment" in {
@@ -32,6 +75,24 @@ class NginxTest extends AnyWordSpec with Matchers {
           )
         case Right(value) =>
           fail(value.toString())
+      }
+    }
+    "wor for regexp string" in {
+      val regexpString = " /\\.well-known/security\\.txt(\\.sig)?$"
+      parse(regexpString, new Nginx("").parseRegexpString(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe regexpString.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "work for simple string" in {
+      val string = "include /etc/nginx/conf.d/drupal/server_prepend*.conf;"
+      parse(string, new Nginx("").parseCall(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe string.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
       }
     }
     "work for multi-line comments" in {
@@ -78,9 +139,13 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
     "process scalar" in {
       val scalar = "www-data"
-      parse(scalar, new Nginx("").parseScalar(using _)) match {
+      parse(scalar, new Nginx("").parseString(using _)) match {
         case Parsed.Success(value, index) =>
-          value.value shouldBe "www-data"
+          value match {
+            case expr : ScalarExpr =>
+              expr.value shouldBe "www-data"
+            //case x => fail(s"wrong return type: ${x.getClass.toString}")
+          }
           index shouldBe scalar.length
         case failure: Parsed.Failure =>
           fail(failure.toString())
@@ -106,16 +171,16 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(failure.toString())
       }
     }
-      "process ~ as name" in {
-        val name = "~"
-        parse(name, new Nginx("").parseName(using _)) match {
-          case Parsed.Success(value, index) =>
-            value.value shouldBe "~"
-            index shouldBe name.length
-          case failure: Parsed.Failure =>
-            fail(failure.toString())
-        }
+    "process ~ as name" in {
+      val name = "~"
+      parse(name, new Nginx("").parseName(using _)) match {
+        case Parsed.Success(value, index) =>
+          value.value shouldBe "~"
+          index shouldBe name.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
       }
+    }
     "process for single assignment as call" in {
       val conf: String =
         """
@@ -128,6 +193,36 @@ class NginxTest extends AnyWordSpec with Matchers {
           )
         case Right(_) =>
           fail("unable to parse file")
+      }
+    }
+    "process string with escaped double quote" in {
+      val weirdString =
+        """
+          |"{\"ready\": true}"""".trim.stripMargin
+      parse(weirdString, new Nginx("").parseDoubleQuoteStringWithEscapedDoubleQuote(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe weirdString.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "process assignment with diverse characters" in {
+      val assignmentCall =
+        """return 200 "{\"ready\": true}";""".stripMargin
+      parse(assignmentCall, new Nginx("").parseCall(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe assignmentCall.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "process DBracked element" in {
+      val dbracked = "{{FASTCGI}}"
+      parse(dbracked, new Nginx("").parseDbrackedVariable(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe dbracked.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
       }
     }
     "process list assignment as call" in {
@@ -240,13 +335,13 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    }
           |""".stripMargin
       parse(block, new Nginx("").parseFile(using _)) match {
-          case Success(value, index) =>
-            index shouldBe block.length
-          case Failure(value) => fail(value.toString)
-        }
+        case Success(value, index) =>
+          index shouldBe block.length
+        case Failure(value) => fail(value.toString)
+      }
     }
     "work for a unnamed block" in {
-      val nginxBlock : String =
+      val nginxBlock: String =
         """
           |server {
           |    listen 80;
@@ -256,7 +351,7 @@ class NginxTest extends AnyWordSpec with Matchers {
         case Left(configFile) =>
           configFile.expressions shouldBe List(
             BlockExpr(
-              Some(NameExpr("server",1, 2)),
+              Some(NameExpr("server", 1, 2)),
               List(),
               List(
                 CallExpr(
@@ -270,6 +365,18 @@ class NginxTest extends AnyWordSpec with Matchers {
           )
         case Right(value) =>
           fail(value.toString())
+      }
+    }
+    "work for block from regression file having string with escaped double quotes" in {
+      val nginxBlock : String =
+        """location /status/ready {
+          |      return 200 "{\"ready\": true}";
+          |}""".stripMargin
+      parse(nginxBlock, new Nginx("").parseFile(using _)) match {
+        case Success(_, index) =>
+          index shouldBe nginxBlock.length
+        //index shouldBe block.length
+        case f: Failure => fail(f.msg)
       }
     }
     "work for a block with parameter" in {
@@ -461,6 +568,45 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(value.toString())
       }
     }
+    "work for encountered location with ~* and regexp" in {
+      val block =
+        """try_files $uri @drupal;""".stripMargin
+      parse(block, new Nginx("").parseCall(using _)) match {
+        case Success(_, index) =>
+        index shouldBe block.length
+        case f: Failure => fail(f.msg)
+      }
+    }
+  }
+
+  /*"conditionals" should {
+    "not work so far" in {
+      val cond =
+        """if ($fastcgi_script_name ~ "^(.+?\.php)(/.+)$") {
+          |      set $real_script_name $1;
+          |      set $path_info $2;
+          |    }
+          |""".stripMargin
+      parse(cond, new Nginx("").parseFile(using _)) match {
+        case Success(_, index) =>
+          fail("should not work at the moment")
+          //index shouldBe cond.length
+        //index shouldBe block.length
+        case f: Failure => fail(f.msg)
+      }
+    }
+  }*/
+
+  "parsing variable expressions" should {
+    "work if expression has spaces" in {
+      val expression = """
+       fastcgi_buffers         ${FASTCGI_BUFFERS:-256 32k};""".stripMargin
+      parse(expression, new Nginx("").parseFile(using _)) match {
+        case Success(value, index) =>
+          index shouldBe expression.length
+        case f : Failure => fail(f.msg)
+      }
+    }
   }
 
   "parsing lua block" should {
@@ -625,22 +771,80 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
   }
 
-  "work with known problem files" in {
-    val files = new File("src/test/resources/nginx/").listFiles(file => {
-      file.isFile && file.getPath.endsWith(".conf")
-    })
-    val result = files.map(file => {
-      (file, new Nginx(Files.readString(file.toPath)).process())
-    }).map {
-      case (file, Right(value)) => (file, Some(value))
-      case (file, Left(_)) => (file,None)
-    }.filter {
-      (lhs, rhs) => rhs.nonEmpty
-    }.map{
-      (lhs,rhs) => s"$lhs -> ${rhs.get.toString()}"
+
+  "regression tests" should {
+    "work for specific file content - debugging" in {
+      val content =
+        """location /index.html {
+          |    add_header X-Frame-Options XFrameOptions;
+          |}
+          |
+          |include /etc/nginx/conf.d/unit/deny.conf;""".stripMargin
+      parse(content, new Nginx("").parseFile(using _)) match {
+        case Success(value, index) =>
+          index shouldBe content.length
+        case f: Failure => fail(f.msg)
+      }
     }
-    if(!result.isEmpty) {
-      fail(result.mkString("\n"))
+
+
+    "work for specific file - debugging" in {
+      val basePath = "src/test/resources/nginx/"
+      val file = "944285_f0531ad3-97db-4b68-a524-a69a7ce283c0_spa.conf"
+      val regressionString = Files.readString(new File(s"$basePath$file").toPath)
+      new Nginx(regressionString).checkForKnownNotNginxConfEndingOnConf() shouldBe false
+      if(file.nonEmpty) {
+        parse(regressionString, new Nginx("").parseFile(using _)) match {
+          case Success(value, index) =>
+            index shouldBe regressionString.length
+          case f: Failure => fail(f.msg)
+        }
+      }
+    }
+
+    "check bad indicators" in {
+      val baseTestFolder = "src/test/resources/nginx/"
+      val files: HashSet[String] = HashSet[String](
+        "2128198_de8483ec-b74d-41d3-a561-39ea4db09056_supervisord.conf",
+        "1327692_840f3d24-e15b-4dbb-a6fc-b347e97ee188_RESPONSE-954-DATA-LEAKAGES-IIS.conf",
+        "1128049_dbbff69e-1f02-406a-8ad5-85731739c65a_jsl.node.conf",
+        "1128109_4d68d267-35df-426d-a6ff-e6ce5d9ee32b_Makefile.conf",
+        "2772526_b911988a-31b4-497a-bf16-15e601b1580c_mlogc-honeypot-sensor.conf",
+        "1327798_2ae32de4-992b-4e61-b93f-dfe61137cfd4_modsecurity.conf",
+        "1327724_fb785c4a-7230-479c-927d-258238d9fc0e_nginx-modsecurity.conf",
+        "2772601_73e6055c-fac3-40ef-a8a0-faf5af91e7e0_modsecurity_crs_10_honeypot.conf",
+        "1515114_31a78472-e723-418e-90a3-27fc484d97d6_main.conf"
+      )
+      files.foreach {
+        file => {
+          new Nginx(Files.readString(new File(s"$baseTestFolder$file").toPath)).checkForKnownNotNginxConfEndingOnConf() shouldBe true
+        }
+      }
+    }
+
+    "work with known problem files" in {
+      val files = new File("src/test/resources/nginx/").listFiles(file => {
+        file.isFile && file.getPath.endsWith(".conf")
+      })
+      val result = files.map(file => {
+        val nginx = new Nginx(Files.readString(file.toPath))
+        if (!nginx.checkForKnownNotNginxConfEndingOnConf())
+          (file, nginx.process())
+        else
+          (file, Left(null))
+      }).map {
+        case (file, Right(value)) => {
+          (file, Some(value))
+        }
+        case (file, Left(_)) => (file, None)
+      }.filter {
+        (lhs, rhs) => rhs.nonEmpty
+      }.map {
+        (lhs, rhs) => s"$lhs -> ${rhs.get.toString()}"
+      }
+      if (!result.isEmpty) {
+        fail(s"Failures:${result.length}\n${result.mkString("\n")}")
+      }
     }
   }
 

@@ -14,19 +14,22 @@ sealed case class ConfigFile(
 sealed trait Expression extends ConfigFileElement
 
 sealed case class NameExpr(value: String, override val index: Int, override val lineNumber: Int)
-    extends Expression
+  extends Expression
 
 sealed case class ScalarExpr(value: String, override val index: Int, override val lineNumber: Int)
-    extends Expression
+  extends Expression
 
 sealed case class InlineExpr(value: String, override val index: Int, override val lineNumber: Int)
-    extends Expression
+  extends Expression
 
 sealed case class CommentExpr(value: String, override val index: Int, override val lineNumber: Int)
-    extends Expression
+  extends Expression
 
 sealed case class VariableExpr(name: String, override val index: Int, override val lineNumber: Int)
-    extends Expression
+  extends Expression
+
+sealed case class MixedString(parts : List[Expression], override val index : Int, override val lineNumber : Int)
+  extends Expression
 
 sealed case class ForeignBlobExpr(
     name: String,
