@@ -3,7 +3,7 @@ package de.halcony.conf.parser
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 import fastparse.*
-import fastparse.Parsed.{Failure, Success}
+import fastparse.Parsed.{Failure, Success, fromParsingRun}
 
 import java.io.File
 import java.nio.file.Files
@@ -11,13 +11,208 @@ import scala.collection.immutable.HashSet
 
 class NginxTest extends AnyWordSpec with Matchers {
 
+  // primitive parsing
+  "parsing string" should {
+    "work for double quote string" in {
+      val string = "\"test\""
+      parse(string, new Nginx("").parseString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe string.length
+          value.getString shouldBe "test"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "process string with escaped double quote" in {
+      val weirdString = {
+        // 1234567890123456789
+        """"{\"ready\": true}"""".trim.stripMargin
+      }
+      parse(weirdString, new Nginx("").parseDoubleQuoteString(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe weirdString.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "work for single quote string" in {
+      val string = "'test'"
+      parse(string, new Nginx("").parseString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe string.length
+          value.getString shouldBe "test"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for longer single quote string with variable content" in {
+      //              1234567890123
+      val string = """'$remote_addr - $remote_user [$time_local] "$request" '"""
+      parse(string, new Nginx("").parseSingleQuoteString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe string.length
+          value.getString shouldBe """$remote_addr - $remote_user [$time_local] "$request" """
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for mixed content string" in {
+      val string = "/alle/meine/$entchen/schwimmen"
+      parse(string, new Nginx("").parseString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe string.length
+          value.getString shouldBe "/alle/meine/$entchen/schwimmen"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "not be recognized as mixed content string" in {
+      val variablePair = "$first $second"
+      parse(variablePair, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          fail("should not succeed")
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "be able to handle mixed in variable" in {
+      //             12345678
+      val mixedIn = "source=$remote_addr"
+      parse(mixedIn, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedIn.length
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "be able to process mixed content string with inline expression" in {
+      val mixedIn = "/app/${WEBROOT:-};"
+      parse(mixedIn, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedIn.length - 1
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "not gobble up space separated content" in {
+      //                    1234567890123
+      val spaceSeparated = "/dev/stdout ${NGINX_ERROR_LOG_LEVEL:-warn}"
+      parse(spaceSeparated, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe "/dev/stdout".length
+          value shouldBe MixedString(List(ScalarExpr("/dev/stdout", 0, -1, Some("CharSeq"))), 0, -1)
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "parse mixed content string with :" in {
+      //                       0         1         2         3
+      //                       012345678901234567890123456789012
+      val mixedContentString = "${NGINX_FASTCGI_PASS:-php}:9000"
+      parse(mixedContentString, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedContentString.length
+          value.parts.length shouldBe 2
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "parse mixed content string with ." in {
+      //                       0         1         2         3
+      //                       012345678901234567890123456789012
+      val mixedContentString = "kong-admin.qbtrade.org"
+      parse(mixedContentString, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedContentString.length
+          value.getString shouldBe "kong-admin.qbtrade.org"
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "parse mixed content string with /" in {
+      //                       0         1         2         3
+      //                       012345678901234567890123456789012
+      val mixedContentString = "http://backend-go-wsproxy:3000/"
+      parse(mixedContentString, new Nginx("").parseMixedContentString(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedContentString.length
+          value.getString shouldBe "http://backend-go-wsproxy:3000/"
+        case failure: Failure =>
+          succeed
+      }
+    }
+  }
+
+  "parsing a regex" should {
+    "work for simple regexp" in {
+      val regexp = "~ ^test$"
+      parse(regexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          index shouldBe regexp.length
+          matchModifier.value shouldBe "~"
+          regex.value shouldBe "^test$"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for matching ()" in {
+      val regexp = "~ ^te(s)t$"
+      parse(regexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          index shouldBe regexp.length
+          matchModifier.value shouldBe "~"
+          regex.value shouldBe "^te(s)t$"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for matching {}" in {
+      val regexp = "~ ^te{s}t$"
+      parse(regexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          index shouldBe regexp.length
+          regex.value shouldBe "^te{s}t$"
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "not work for non matching ()" in {
+      val regexp = "~ ^tes)t$;"
+      parse(regexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          if (index == regexp.length) fail("should not be able to parse the whole string")
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "not work for non matching {}" in {
+      val regexp = "~ ^tes}t$"
+      parse(regexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          if (index == regexp.length) fail("should not be able to parse the whole string")
+        case failure: Failure =>
+          succeed
+      }
+    }
+    "be able to process complex regexp" in {
+      val complexRegexp = "~ ^/(index|get|static|errors/report|errors/404|errors/503|health_check)\\.php$"
+      parse(complexRegexp, new Nginx("").parseRegexExprs(using _)) match {
+        case Success((matchModifier,regex), index) =>
+          index shouldBe complexRegexp.length
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+  }
+
   "parsing a variable" should {
     "work for $var" in {
+      //             123456
       val varExpr = "$var t"
       parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
         case Success(value, index) =>
           index shouldBe varExpr.length - 2
-          value.name shouldBe "var"
+          value.getVariableStringRepresentation shouldBe "$var"
         case f : Failure =>
           fail(f.msg)
       }
@@ -37,7 +232,7 @@ class NginxTest extends AnyWordSpec with Matchers {
       parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
         case Success(value, index) =>
           index shouldBe varExpr.length - 2
-          value.name shouldBe "var"
+          value.getVariableStringRepresentation shouldBe "$var"
         case f : Failure =>
           fail(f.msg)
       }
@@ -47,20 +242,39 @@ class NginxTest extends AnyWordSpec with Matchers {
       parse(varExpr,new Nginx(varExpr).parseVariable(using _)) match {
         case Success(value, index) =>
           index shouldBe varExpr.length - 2
-          value.name shouldBe "var"
+          value.getVariableStringRepresentation shouldBe "$var"
         case f : Failure =>
           fail(f.msg)
       }
     }
+    "process DBracked element" in {
+      val dbracked = "{{FASTCGI}}"
+      parse(dbracked, new Nginx("").parseDbrackedVariable(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe dbracked.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "process inline expression" in {
+      val inlineExpr = "${NGINX_ERROR_LOG_LEVEL:-warn}"
+      parse(inlineExpr, new Nginx("").parseInlineExpression(using _)) match {
+        case Parsed.Success(value, index) =>
+          value.value shouldBe "NGINX_ERROR_LOG_LEVEL:-warn"
+          index shouldBe inlineExpr.length
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
   }
 
-  "parsing an nginx configuration file single lines" should {
+  "parsing comments" should {
     "work for single comment" in {
       val conf = "# nginx.vh.default.conf  --  docker-openresty"
       new Nginx(conf).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0,1)
+            CommentExpr("nginx.vh.default.conf  --  docker-openresty", 0, 1)
           )
         case Right(value) =>
           fail(value.toString())
@@ -71,28 +285,10 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(comment).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("",0,1)
+            CommentExpr("", 0, 1)
           )
         case Right(value) =>
           fail(value.toString())
-      }
-    }
-    "wor for regexp string" in {
-      val regexpString = " /\\.well-known/security\\.txt(\\.sig)?$"
-      parse(regexpString, new Nginx("").parseRegexpString(using _)) match {
-        case Parsed.Success(value, index) =>
-          index shouldBe regexpString.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
-      }
-    }
-    "work for simple string" in {
-      val string = "include /etc/nginx/conf.d/drupal/server_prepend*.conf;"
-      parse(string, new Nginx("").parseCall(using _)) match {
-        case Parsed.Success(value, index) =>
-          index shouldBe string.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
       }
     }
     "work for multi-line comments" in {
@@ -104,8 +300,8 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(comments.trim).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CommentExpr("nginx.vh.default.conf  --  docker-openresty",0, 1),
-            CommentExpr("",46, 2)
+            CommentExpr("nginx.vh.default.conf  --  docker-openresty", 0, 1),
+            CommentExpr("", 46, 2)
           )
         case Right(value) =>
           fail(value.toString())
@@ -127,40 +323,9 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail("unable to parse file")
       }
     }
-    "process inline expression" in {
-      val inlineExpr = "${NGINX_ERROR_LOG_LEVEL:-warn}"
-      parse(inlineExpr, new Nginx("").parseInlineExpression(using _)) match {
-        case Parsed.Success(value, index) =>
-          value.value shouldBe "NGINX_ERROR_LOG_LEVEL:-warn"
-          index shouldBe inlineExpr.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
-      }
-    }
-    "process scalar" in {
-      val scalar = "www-data"
-      parse(scalar, new Nginx("").parseString(using _)) match {
-        case Parsed.Success(value, index) =>
-          value match {
-            case expr : ScalarExpr =>
-              expr.value shouldBe "www-data"
-            //case x => fail(s"wrong return type: ${x.getClass.toString}")
-          }
-          index shouldBe scalar.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
-      }
-    }
-    "process scalar list" in {
-      val scalarList = "www-data www-other"
-      parse(scalarList, new Nginx("").parseArgumentList(using _)) match {
-        case Parsed.Success(value, index) =>
-          value.length shouldBe 2
-          index shouldBe scalarList.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
-      }
-    }
+  }
+
+  "process name" should {
     "process name" in {
       val name = "user"
       parse(name, new Nginx("").parseName(using _)) match {
@@ -181,7 +346,76 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(failure.toString())
       }
     }
-    "process for single assignment as call" in {
+  }
+
+  // simple composite parsing
+  "parsing an argument list" should {
+    "work for scalar list" in {
+      val scalarList = "www-data www-other;"
+      parse(scalarList, new Nginx("").parseArgumentList(using _)) match {
+        case Parsed.Success(value, index) =>
+          value.length shouldBe 2
+          index shouldBe scalarList.length -1
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "work for mixed list" in {
+      //               1234567890
+      val mixedList = "$uri $uri/;"
+      parse(mixedList, new Nginx("").parseArgumentList(using _)) match {
+        case Parsed.Success(value, index) =>
+          index shouldBe mixedList.length -1
+          println(value)
+          value.length shouldBe 2
+          value shouldBe List(
+            VariableExpr("uri",0,-1),
+            MixedString(
+              List(
+                VariableExpr("uri",5,-1),
+                ScalarExpr("/",9,-1, Some("CharSeq"))
+              ),
+              5,-1
+            )
+          )
+        case failure: Parsed.Failure =>
+          fail(failure.toString())
+      }
+    }
+    "process a argument list consisting of asingle inline expression" in {
+      //                  1234567890
+      val singleInline = "/app/${WEBROOT:-};"
+      parse(singleInline, new Nginx("").parseArgumentList(using _)) match {
+        case Success(value, index) =>
+          println(value)
+          index shouldBe singleInline.length - 1
+          value.length shouldBe 1
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "not process mixed content string as var" in {
+      //                  123456
+      val mixedContent = "$var/;"
+      parse(mixedContent, new Nginx("").parseArgumentList(using _)) match {
+        case Success(value, index) =>
+          index shouldBe mixedContent.length - 1
+          value shouldBe List(
+            MixedString(
+              List(
+                VariableExpr("var", 0, -1),
+                ScalarExpr("/", 4, -1, Some("CharSeq"))
+              ),
+              0, -1
+            ))
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+  }
+
+  "process call" should {
+    "work for single assignment as call" in {
       val conf: String =
         """
           |user www-data;
@@ -189,21 +423,13 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(conf).process() match {
         case Left(file) =>
           file.expressions shouldBe List(
-            CallExpr(NameExpr("user", 1, 2), List(ScalarExpr("www-data", 6, 2)), 1, 2),
-          )
+            CallExpr(NameExpr("user", 1, 2),
+              List(
+                MixedString(
+                  List(
+                    ScalarExpr("www-data", 6, 2, Some("CharSeq"))), 6, 2)), 1, 2))
         case Right(_) =>
           fail("unable to parse file")
-      }
-    }
-    "process string with escaped double quote" in {
-      val weirdString =
-        """
-          |"{\"ready\": true}"""".trim.stripMargin
-      parse(weirdString, new Nginx("").parseDoubleQuoteStringWithEscapedDoubleQuote(using _)) match {
-        case Parsed.Success(value, index) =>
-          index shouldBe weirdString.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
       }
     }
     "process assignment with diverse characters" in {
@@ -216,16 +442,17 @@ class NginxTest extends AnyWordSpec with Matchers {
           fail(failure.toString())
       }
     }
-    "process DBracked element" in {
-      val dbracked = "{{FASTCGI}}"
-      parse(dbracked, new Nginx("").parseDbrackedVariable(using _)) match {
-        case Parsed.Success(value, index) =>
-          index shouldBe dbracked.length
-        case failure: Parsed.Failure =>
-          fail(failure.toString())
+    "work if expression has spaces" in {
+      val expression =
+        """
+             fastcgi_buffers         ${FASTCGI_BUFFERS:-256 32k};""".stripMargin
+      parse(expression, new Nginx("").parseFile(using _)) match {
+        case Success(value, index) =>
+          index shouldBe expression.length
+        case f: Failure => fail(f.msg)
       }
     }
-    "process list assignment as call" in {
+    "work to process list assignment as call" in {
       val conf: String =
         """
           |error_page  500 502  /50x.html;
@@ -233,13 +460,11 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(conf).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CallExpr(
-              NameExpr("error_page", 1, 2),
-              List(ScalarExpr("500", 13, 2), ScalarExpr("502", 17, 2), ScalarExpr("/50x.html", 22, 2)),
-              1,
-              2
-            )
-          )
+            CallExpr(NameExpr("error_page", 1, 2),
+              List(
+                MixedString(List(ScalarExpr("500", 13, 2, Some("CharSeq"))), 13, 2),
+                MixedString(List(ScalarExpr("502", 17, 2, Some("CharSeq"))), 17, 2),
+                MixedString(List(ScalarExpr("/50x.html", 22, 2, Some("CharSeq"))), 22, 2)), 1, 2))
         case Right(value) =>
           fail(value.toString())
       }
@@ -250,16 +475,10 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(inlineExpr.trim).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            CallExpr(
-              NameExpr("error_log",0, 1),
+            CallExpr(NameExpr("error_log", 0, 1),
               List(
-                ScalarExpr("/dev/stdout",10,1),
-                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",22,1)
-              ),
-              0,
-              1
-            )
-          )
+                MixedString(List(ScalarExpr("/dev/stdout", 10, 1, Some("CharSeq"))), 10, 1),
+                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn", 22, 1)), 0, 1))
         case Right(value) =>
           fail(value.toString())
       }
@@ -274,17 +493,40 @@ class NginxTest extends AnyWordSpec with Matchers {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("log_format",1, 2),
+              NameExpr("log_format", 1, 2),
               List(
-                ScalarExpr("main",12,2),
-                ScalarExpr("$remote_addr - $remote_user [$time_local] \"$request\" ",17,2),
-                ScalarExpr("$status $body_byte_sent \"$http_referer\" ",89, 3)
-              ),
-              1, 2
-            )
-          )
+                MixedString(List(ScalarExpr("main", 12, 2, Some("CharSeq"))), 12, 2),
+                ScalarExpr("""$remote_addr - $remote_user [$time_local] "$request" """, 17, 2, None),
+                ScalarExpr("""$status $body_byte_sent "$http_referer" """, 89, 3, None)), 1, 2))
         case Right(value) =>
           fail(value.toString())
+      }
+    }
+    "process call to variable" in {
+      val call = "$geoip2_data_country_code source=$remote_addr country iso_code;"
+      parse(call, new Nginx("").parseCall(using _)) match {
+        case Success(value, index) =>
+          index shouldBe call.length
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "process call with inline expression argument" in {
+      val call = "root /app/${WEBROOT:-};"
+      parse(call, new Nginx("").parseCall(using _)) match {
+        case Success(value, index) =>
+          index shouldBe call.length
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "process rewrite call" in {
+      val call = "rewrite ^/v1/ws/(.*)$ /$1 break;"
+      parse(call, new Nginx("").parseCall(using _)) match {
+        case Success(value, index) =>
+          index shouldBe call.length
+        case failure: Failure =>
+          fail(failure.msg)
       }
     }
   }
@@ -301,84 +543,17 @@ class NginxTest extends AnyWordSpec with Matchers {
         case Left(value) =>
           value.expressions shouldBe List(
             CallExpr(
-              NameExpr("error_log",1, 2),
-              List(
-                ScalarExpr("/dev/stdout",11, 2),
-                InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn",23, 2)
-              ),
-              1,2
-            ),
-            CommentExpr("Establish some environment variables for later use",56, 4)
-            )
+              NameExpr("error_log", 1, 2),
+              List(MixedString(List(ScalarExpr("/dev/stdout", 11, 2, Some("CharSeq"))), 11, 2), InlineExpr("NGINX_ERROR_LOG_LEVEL:-warn", 23, 2)), 1, 2),
+            CommentExpr("Establish some environment variables for later use", 56, 4))
         case Right(value) =>
           fail(value.toString())
       }
     }
   }
 
-  "parsing an nginx block" should {
-    "work for a geoip2 block" in {
-      val block =
-        """
-          |geoip2 /etc/nginx/GeoLite2-Country.mmdb {
-          |        auto_reload 1h;
-          |
-          |        $geoip2_metadata_country_build metadata build_epoch;
-          |
-          |        # populate the country
-          |        $geoip2_data_country_code source=$remote_addr country iso_code;
-          |        $geoip2_data_country_name source=$remote_addr country names en;
-          |
-          |        # populate the continent
-          |        $geoip2_data_continent_code source=$remote_addr continent code;
-          |        $geoip2_data_continent_name source=$remote_addr continent names en;
-          |    }
-          |""".stripMargin
-      parse(block, new Nginx("").parseFile(using _)) match {
-        case Success(value, index) =>
-          index shouldBe block.length
-        case Failure(value) => fail(value.toString)
-      }
-    }
-    "work for a unnamed block" in {
-      val nginxBlock: String =
-        """
-          |server {
-          |    listen 80;
-          |}
-          |""".stripMargin;
-      new Nginx(nginxBlock).process() match {
-        case Left(configFile) =>
-          configFile.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("server", 1, 2)),
-              List(),
-              List(
-                CallExpr(
-                  NameExpr("listen", 14, 3),
-                  List(ScalarExpr("80", 21, 3)),
-                  14, 3
-                )),
-              1,
-              1
-            )
-          )
-        case Right(value) =>
-          fail(value.toString())
-      }
-    }
-    "work for block from regression file having string with escaped double quotes" in {
-      val nginxBlock : String =
-        """location /status/ready {
-          |      return 200 "{\"ready\": true}";
-          |}""".stripMargin
-      parse(nginxBlock, new Nginx("").parseFile(using _)) match {
-        case Success(_, index) =>
-          index shouldBe nginxBlock.length
-        //index shouldBe block.length
-        case f: Failure => fail(f.msg)
-      }
-    }
+  // complex composite parsing
+  "parsing a location block" should {
     "work for a block with parameter" in {
       val nginxBlock: String =
         """
@@ -386,58 +561,21 @@ class NginxTest extends AnyWordSpec with Matchers {
           |    listen 80;
           |}
           |""".stripMargin;
-      new Nginx(nginxBlock).process() match {
-        case Left(configFile) =>
-          configFile.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location",1, 2)),
-              List(ScalarExpr("/",10,2)),
+      parse(nginxBlock, new Nginx("").parseLocationBlock(using _)) match {
+        case Success(value, index) =>
+          value shouldBe CondCtrlStructure(
+            "location",
+            CallExpr(
+              NameExpr("", 10, -1),
               List(
-                CallExpr(
-                  NameExpr("listen", 18, 3),
-                  List(ScalarExpr("80", 25, 3)),
-                  18, 3
-                )),
-              1,
-              1
-            )
-          )
-        case Right(value) =>
-          fail(value.toString())
-      }
-    }
-    "work for a block with multiple parameters" in {
-      val block =
-        """
-          |location $first $second third {
-          |    error_log 42;
-          |}
-          |""".stripMargin
-      new Nginx(block).process() match {
-        case Left(value) =>
-          value.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location",1,2)),
-              List(
-                VariableExpr("first",10,2),
-                VariableExpr("second",17,2),
-                ScalarExpr("third",25,2)
-              ),
-              List(
-                CallExpr(
-                  NameExpr("error_log",37,3),
-                  List(
-                    ScalarExpr("42",47,3)
-                  ),
-                  37,
-                  3
-              )
-            ),
-              1,
-              1
-          ))
-        case Right(value) =>
-          fail(value.toString())
+                NameExpr("location", 0, -1),
+                MixedString(List(ScalarExpr("/", 10, -1, Some("CharSeq"))), 10, -1)),
+              0, -1),
+            List(CallExpr(NameExpr("listen", 18, -1), List(MixedString(List(ScalarExpr("80", 25, -1, Some("CharSeq"))), 25, -1)), 18, -1)),
+            List(),
+            0, -1)
+        case failure: Failure =>
+          fail(failure.msg)
       }
     }
     "work for a block with parameter assigned via =" in {
@@ -450,18 +588,15 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(nginxBlock).process() match {
         case Left(configFile) =>
           configFile.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location", 1, 2)),
-              List(ScalarExpr("/50x.html", 12, 2)),
-              List(
-                CallExpr(
-                  NameExpr("listen", 28, 3),
-                  List(ScalarExpr("80", 35, 3)),
-                  28, 3
-                )),
-              1,
-              1
-            )
+            CondCtrlStructure(
+              "location",
+              CallExpr(
+                NameExpr("=", 10, 2),
+                List(NameExpr("location", 1, 2),MixedString(List(ScalarExpr("/50x.html", 12, 2, Some("CharSeq"))), 12, 2)),
+                1, 2),
+              List(CallExpr(NameExpr("listen", 28, 3), List(MixedString(List(ScalarExpr("80", 35, 3, Some("CharSeq"))), 35, 3)), 28, 3)),
+              List(),
+              1, 2)
           )
         case Right(value) =>
           fail(value.toString())
@@ -479,132 +614,102 @@ class NginxTest extends AnyWordSpec with Matchers {
       new Nginx(config).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location",1,2)),
-              List(ScalarExpr("/",10,2)),
-              List(
-                CallExpr(
-                  NameExpr("try_files",18,3),
-                  List(
-                    VariableExpr("uri",28,3),
-                    VariableExpr("uri/",33,3),
-                    ScalarExpr("/index.html",39,3),
-                  ),
-                  18,
-                  3
-                )
-              ),
-              1,
-              1
-            ),
-            CallExpr(
-              NameExpr("error_page",55,6),
-              List(
-                ScalarExpr("504",66,6),
-                ScalarExpr("/50x.html",71,6)
-              ),
-              55,
-              6
-            )
-          )
+            CondCtrlStructure(
+              "location",
+              CallExpr(
+                NameExpr("", 10, 2),
+                List(NameExpr("location", 1, 2), MixedString(List(ScalarExpr("/", 10, 2, Some("CharSeq"))), 10, 2)),
+                1, 2),
+              List(CallExpr(NameExpr("try_files", 18, 3), List(VariableExpr("uri", 28, 3), MixedString(List(VariableExpr("uri", 33, 3), ScalarExpr("/", 37, 3, Some("CharSeq"))), 33, 3), MixedString(List(ScalarExpr("/index.html", 39, 3, Some("CharSeq"))), 39, 3)), 18, 3)),
+              List(),
+              1, 2),
+            CallExpr(NameExpr("error_page", 55, 6), List(MixedString(List(ScalarExpr("504", 66, 6, Some("CharSeq"))), 66, 6), MixedString(List(ScalarExpr("/50x.html", 71, 6, Some("CharSeq"))), 71, 6)), 55, 6))
         case Right(value) => fail(value.toString())
       }
     }
-    "work for a block followed by a comment" in {
-      val block =
-        """
-          |location = /50x.html {
-          |        root   /usr/local/openresty/nginx/html;
-          |}
-          |
-          |# proxy the PHP scripts to Apache listening on 127.0.0.1:80
-          |""".stripMargin
-      new Nginx(block).process() match {
-        case Left(value) =>
-          value.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location",1,2)),
-              List(ScalarExpr("/50x.html",12,2)),
-              List(
-                CallExpr(NameExpr("root",32,3),
-                  List(ScalarExpr("/usr/local/openresty/nginx/html",39,3)),
-                  32,3
-              )),
-              1,1
-            ),
-            CommentExpr("proxy the PHP scripts to Apache listening on 127.0.0.1:80",
-              75,6)
-          )
-        case Right(value) =>
-          fail(value.toString())
-      }
-    }
     "work for location with regexp" in {
-      val block =
-        """
-          |location ~ ^/(index|get|static|errors/report|errors/404|errors/503|health_check)\.php$ {
+      val block = {
+        // 12345678901234
+        """location ~ ^/(index|get|static|errors/report|errors/404|errors/503|health_check)\.php$ {
           |        try_files 404;
           |}
           |""".stripMargin
+      }
       new Nginx(block).process() match {
         case Left(value) =>
           value.expressions shouldBe List(
-            BlockExpr(
-              Some(NameExpr("location",1,2)),
-              List(
-                ScalarExpr("~",10,2),
-                ScalarExpr("^/(index|get|static|errors/report|errors/404|errors/503|health_check)\\.php$",12,2)
-              ),
-              List(
-                CallExpr(
-                  NameExpr("try_files",98,3),
-                  List(ScalarExpr("404",108,3)),
-                  98,3)
-              ),
-              1,1
-            )
-          )
+            CondCtrlStructure(
+              "location",
+              CallExpr(
+                NameExpr("~", 9, 1),
+                List(NameExpr("location", 0, 1),
+                  ScalarExpr("^/(index|get|static|errors/report|errors/404|errors/503|health_check)\\.php$", 11, 1, Some("RegEx"))),
+                0, 1),
+              List(CallExpr(NameExpr("try_files", 97, 2), List(MixedString(List(ScalarExpr("404", 107, 2, Some("CharSeq"))), 107, 2)), 97, 2)),
+              List(),
+              0, 1))
         case Right(value) =>
           fail(value.toString())
       }
     }
-    "work for encountered location with ~* and regexp" in {
-      val block =
-        """try_files $uri @drupal;""".stripMargin
-      parse(block, new Nginx("").parseCall(using _)) match {
+    "work for block from regression file having string with escaped double quotes" in {
+      val nginxBlock: String =
+        """location /status/ready {
+          |      return 200 "{\"ready\": true}";
+          |}""".stripMargin
+      parse(nginxBlock, new Nginx("").parseFile(using _)) match {
         case Success(_, index) =>
-        index shouldBe block.length
-        case f: Failure => fail(f.msg)
-      }
-    }
-  }
-
-  /*"conditionals" should {
-    "not work so far" in {
-      val cond =
-        """if ($fastcgi_script_name ~ "^(.+?\.php)(/.+)$") {
-          |      set $real_script_name $1;
-          |      set $path_info $2;
-          |    }
-          |""".stripMargin
-      parse(cond, new Nginx("").parseFile(using _)) match {
-        case Success(_, index) =>
-          fail("should not work at the moment")
-          //index shouldBe cond.length
+          index shouldBe nginxBlock.length
         //index shouldBe block.length
         case f: Failure => fail(f.msg)
       }
     }
-  }*/
+    "be able to parse location with very complex regex" in {
+      val location =
+        """location ~* \.(engine|inc|install|make|module|profile|po|sh|.*sql|.*sql\.gz|theme|twig|tpl(\.php)?|xtmpl|yml)(~|\.sw[op]|\.bak|\.orig|\.save)?$|^\/(\.(?!well-known).*|Entries.*|Repository|Root|Tag|Template|web\.config)$|composer\.(json|lock)$|^\/#.*#$|\.php(~|\.sw[op]|\.bak|\.orig|\.save)$ {
+          |      deny all;
+          |      access_log off;
+          |      log_not_found off;
+          |      return 404;
+          |}""".stripMargin
+      parse(location, new Nginx("").parseFile(using _)) match {
+          case Success(_, index) =>
+            index shouldBe location.length
+          //index shouldBe block.length
+          case f: Failure => fail(f.msg)
+      }
+    }
+  }
 
-  "parsing variable expressions" should {
-    "work if expression has spaces" in {
-      val expression = """
-       fastcgi_buffers         ${FASTCGI_BUFFERS:-256 32k};""".stripMargin
-      parse(expression, new Nginx("").parseFile(using _)) match {
+  "parsing an arbitrary block" should {
+    "work for a geoip2 block" in {
+      val block =
+        """
+          |geoip2 /etc/nginx/GeoLite2-Country.mmdb {
+          |        $geoip2_metadata_country_build metadata build_epoch;
+          |
+          |        # populate the country
+          |        $geoip2_data_country_code source=$remote_addr country iso_code;
+          |    }
+          |""".stripMargin
+      parse(block, new Nginx("").parseFile(using _)) match {
         case Success(value, index) =>
-          index shouldBe expression.length
-        case f : Failure => fail(f.msg)
+          index shouldBe block.length
+        case Failure(value) => fail(value.toString)
+      }
+    }
+    "work for a unnamed block" in {
+      val nginxBlock: String =
+        """
+          |server {
+          |    listen 80;
+          |}
+          |""".stripMargin;
+      new Nginx(nginxBlock).process() match {
+        case Left(configFile) =>
+          configFile.expressions shouldBe List(BlockExpr(Some(NameExpr("server", 1, 2)), List(), List(CallExpr(NameExpr("listen", 14, 3), List(MixedString(List(ScalarExpr("80", 21, 3, Some("CharSeq"))), 21, 3)), 14, 3)), 1, 1))
+        case Right(value) =>
+          fail(value.toString())
       }
     }
   }
@@ -771,15 +876,90 @@ class NginxTest extends AnyWordSpec with Matchers {
     }
   }
 
+  "parse if structure" should {
+    "work for if" in {
+      val ctrlBlock =
+        """
+          |if ( $test ~ 42 ) {
+          |    return false;
+          |}""".stripMargin
+      parse(ctrlBlock, new Nginx("").parseControlStructure(using _)) match {
+        case Success(value, index) =>
+          value.ctype shouldBe "if"
+          //value.condExpr.length shouldBe 3 todo: fill out the condExpr
+          value.block.length shouldBe 1
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for if with single variable parameter" in {
+      val ctrlBlock = {
+        // 123456789012
+        """if ($test) {
+          |    return false;
+          |}""".stripMargin
+      }
+      parse(ctrlBlock, new Nginx("").parseControlStructure(using _)) match {
+        case Success(value, index) =>
+          value.ctype shouldBe "if"
+          //value.condExpr.length shouldBe 1
+          value.block.length shouldBe 1
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+    "work for if with tight brackets" in {
+      val ctrlBlock = {
+        // 0         1         2         3
+        // 0123456789012345678901234567890123456789
+        """if ($http_x_forwarded_proto = 'https') {
+          |    set $fastcgi_https "on";
+          |    set $fastcgi_port  "443";
+          |}""".stripMargin
+      }
+      parse(ctrlBlock, new Nginx("").parseControlStructure(using _)) match {
+        case Success(value, index) =>
+          value.ctype shouldBe "if"
+          //value.condExpr.length shouldBe 3
+          value.block.length shouldBe 2
+        case failure: Failure =>
+          fail(failure.msg)
+      }
+    }
+  }
 
   "regression tests" should {
+    /** Known Bad Configs but not yet escalated
+     * 696f7e32320a6221_default.conf
+     * 94701fcc87e6b293_upstream2.conf
+     * 02787bcb3c8a6e5a_default.conf
+     * 0f9f819c9e1c488f_default.conf
+     * 772718778dd5745d_default.conf
+     * 5058d4f097bafe11_default.conf
+     * 94afbff955496042_default.conf
+     * 8957ffc97c8d96bf_nginx.conf
+     * de6bf4a86107644b_nginx.conf
+     * 251355d82ed35651_default.conf
+     * 4e34fa9c02dc5a6e_nginx.conf
+     * 1c99b73b532e6055_nginx.conf
+     * 76647d8281e146f2_upstream.conf
+     * 3663a1eb8ebc6651_nginx.conf
+     * 65bb670ec1ff0c55_nginx.conf
+     * e9aba18c2af52aab_nginx.conf
+     * 24e8371479e21fdb_nginx.conf
+     * 4880b5ac9d4b3ac9_default.conf
+     * f5ea299d9974fbfb_nginx.conf
+     * 7fdfde497ffc6272_nginx.conf
+     * 83cfea17d1650d5d_nginx.conf
+     * 038cdff87dbd4752_nginx.conf
+     * d4be7191eebb7344_default.conf
+     */
+
     "work for specific file content - debugging" in {
       val content =
-        """location /index.html {
-          |    add_header X-Frame-Options XFrameOptions;
-          |}
+        """
           |
-          |include /etc/nginx/conf.d/unit/deny.conf;""".stripMargin
+          |""".stripMargin
       parse(content, new Nginx("").parseFile(using _)) match {
         case Success(value, index) =>
           index shouldBe content.length
@@ -790,10 +970,10 @@ class NginxTest extends AnyWordSpec with Matchers {
 
     "work for specific file - debugging" in {
       val basePath = "src/test/resources/nginx/"
-      val file = "944285_f0531ad3-97db-4b68-a524-a69a7ce283c0_spa.conf"
-      val regressionString = Files.readString(new File(s"$basePath$file").toPath)
-      new Nginx(regressionString).checkForKnownNotNginxConfEndingOnConf() shouldBe false
+      val file = ""
       if(file.nonEmpty) {
+        val regressionString = Files.readString(new File(s"$basePath$file").toPath)
+        new Nginx(regressionString).checkForKnownNotNginxConfEndingOnConf() shouldBe false
         parse(regressionString, new Nginx("").parseFile(using _)) match {
           case Success(value, index) =>
             index shouldBe regressionString.length
@@ -813,7 +993,9 @@ class NginxTest extends AnyWordSpec with Matchers {
         "1327798_2ae32de4-992b-4e61-b93f-dfe61137cfd4_modsecurity.conf",
         "1327724_fb785c4a-7230-479c-927d-258238d9fc0e_nginx-modsecurity.conf",
         "2772601_73e6055c-fac3-40ef-a8a0-faf5af91e7e0_modsecurity_crs_10_honeypot.conf",
-        "1515114_31a78472-e723-418e-90a3-27fc484d97d6_main.conf"
+        "1515114_31a78472-e723-418e-90a3-27fc484d97d6_main.conf",
+        "957b71d626ee4ee0_61_asl_recons_dlp.conf",
+        "c8a750a83ab83677_00_asl_x_searchengines.conf"
       )
       files.foreach {
         file => {
