@@ -60,7 +60,7 @@ sealed case class MixedString(
   override def getString: String = parts.map {
     case VariableExpr(value, _, _)  => s"$$$value"
     case ScalarExpr(value, _, _, _) => value
-    case _                          => ???
+    case x                          => s"[[UNKNOWN STRING OF ${x.getClass}"
   }.mkString
 }
 
