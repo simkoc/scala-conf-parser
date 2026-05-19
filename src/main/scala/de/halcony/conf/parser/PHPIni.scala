@@ -63,7 +63,7 @@ class PHPIni(content: String) extends LogSupport {
   )
 
   private[parser] def parseComment[$: P]: P[CommentExpr] =
-    P(anyWhitespace.rep ~ Index ~ ";" ~~/ (CharsWhile(_ != '\n') | "").! ~~/ ("\n" | End))
+    P(anyWhitespace.rep ~ Index ~ (";" | "#") ~~/ (CharsWhile(_ != '\n') | "").! ~~/ ("\n" | End))
       .map((startIndex, comment) => CommentExpr(comment.trim, startIndex, getLineIndex(startIndex)))
 
   private[parser] def parseSection[$: P]: P[CommentExpr] = P(
